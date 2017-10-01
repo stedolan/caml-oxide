@@ -1,0 +1,11 @@
+[package]
+name = "dmz"
+version = "0.1.0"
+authors = ["Stephen Dolan <stephen.dolan@cl.cam.ac.uk>"]
+
+[dependencies]
+libc = "0.2.0"
+
+[lib]
+name = "rusty"
+crate-type = ["staticlib"]
