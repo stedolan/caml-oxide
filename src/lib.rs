@@ -1,5 +1,4 @@
 #![feature(nll)]
-
 #![allow(dead_code)]
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
@@ -10,6 +9,7 @@ use std::ptr;
 use std::marker;
 use std::slice;
 use std::str;
+use std::io::{self, Write};
 
 type Uintnat = u64;
 
@@ -110,8 +110,8 @@ unsafe fn free_gc_cell(cell: &Cell<RawValue>) {
 
 
 
-fn with_gc<F, A>(body: F) -> A
-    where F: Fn(&mut Gc) -> A {
+fn with_gc<'a, F>(body: F) -> RawValue
+    where F: Fn(&mut Gc) -> RawValue {
   let mut gc = Gc {_marker: Default::default()};
   let locals : LocalsBlock = Default::default();
   unsafe {
@@ -135,25 +135,121 @@ fn with_gc<F, A>(body: F) -> A
   }
 }
 
-#[derive(Clone, Copy)]
-struct Val<'a> {
-  _marker: marker::PhantomData<&'a i32>,
+
+struct Val<'a, T:'a> {
+  _marker: marker::PhantomData<&'a T>,
   raw: RawValue
 }
 
-impl <'a> Val<'a> {
-  fn new<'gc>(_gc: &'a Gc<'gc>, x: RawValue) -> Val<'a> { Val { _marker: Default::default(), raw: x } }
+
+impl<'a, T> Copy for Val<'a, T> { }
+
+impl<'a, T> Clone for Val<'a, T> {
+    fn clone(&self) -> Val<'a, T> {
+        Val {_marker: Default::default(), raw: self.raw}
+    }
+}
+
+impl <'a, T> Val<'a, T> {
+  unsafe fn new<'gc>(_gc: &'a Gc<'gc>, x: RawValue) -> Val<'a, T> {
+    Val { _marker: Default::default(), raw: x }
+  }
 
   fn eval(self) -> RawValue { self.raw }
-  fn var<'g, 'gc>(self, gc: &'g Gc<'gc>) -> Var<'gc> {
+
+  fn var<'g, 'gc>(self, gc: &'g Gc<'gc>) -> Var<'gc, T> {
     Var::new(gc, self)
   }
 
-  fn as_int(self) -> intnat {
-    assert!(!Is_block(self.raw));
-    self.raw >> 1
+  unsafe fn field<F>(self, i : Uintnat) -> Val<'a, F> {
+    assert!(Tag_val(self.raw) < No_scan_tag);
+    assert!(i < Wosize_val(self.raw));
+    Val { _marker: Default::default(), raw: *(self.raw as *const RawValue).offset(i as isize) }
   }
 
+  fn is_block(self) -> bool { Is_block(self.raw) }
+}
+
+trait MLType {
+  fn name() -> String;
+}
+
+impl MLType for String {
+  fn name() -> String { "string".to_owned() }
+}
+
+impl MLType for intnat {
+  fn name() -> String { "int".to_owned() }
+}
+
+struct AA {}
+impl MLType for AA {
+  fn name() -> String { "'a".to_owned() }
+}
+
+struct BB {}
+impl MLType for BB {
+  fn name() -> String { "'b".to_owned() }
+}
+
+struct CC {}
+impl MLType for CC {
+  fn name() -> String { "'c".to_owned() }
+}
+
+struct DD {}
+impl MLType for DD {
+  fn name() -> String { "'d".to_owned() }
+}
+
+struct EE {}
+impl MLType for EE {
+  fn name() -> String { "'e".to_owned() }
+}
+
+fn type_name<T: MLType>() -> String {
+  T::name()
+}
+
+struct Pair<A: MLType, B: MLType> {
+  _a: marker::PhantomData<A>,
+  _b: marker::PhantomData<B>
+}
+impl <A: MLType, B:MLType> MLType for Pair<A, B> {
+  fn name() -> String {
+    format!("({} * {})", A::name(), B::name())
+  }
+}
+
+struct List<A: MLType> {
+  _a: marker::PhantomData<A>
+}
+impl <A: MLType> MLType for List<A> {
+  fn name() -> String {
+    format!("{} list", A::name())
+  }
+}
+
+enum CList<'a, A:'a + MLType> {
+  Nil,
+  Cons { x: Val<'a, A>, xs: Val<'a, List<A>> }
+}
+impl <'a, A: MLType> Val<'a, List<A>> {
+  fn as_list(self) -> CList<'a, A> {
+    if self.is_block() {
+      CList::Cons { x: unsafe {self.field(0)}, xs: unsafe {self.field(1)} }
+    } else {
+      CList::Nil
+    }
+  }
+}
+
+impl <'a, A: MLType, B: MLType> Val<'a, Pair<A, B>> {
+  fn fst(self) -> Val<'a, A> { unsafe { self.field(0) }}
+  fn snd(self) -> Val<'a, B> { unsafe { self.field(1) }}
+}
+
+impl <'a> Val<'a, String> {
   fn as_str(self) -> &'a str {
     let s = self.raw;
     assert!(Tag_val(s) == String_tag);
@@ -162,167 +258,151 @@ impl <'a> Val<'a> {
       str::from_utf8(slice).unwrap()
     }
   }
-
-  fn field(self, i : Uintnat) -> Val<'a> {
-    assert!(Tag_val(self.raw) < No_scan_tag);
-    assert!(i < Wosize_val(self.raw));
-    Val { _marker: Default::default(), raw: unsafe {*(self.raw as *const RawValue).offset(i as isize)} }
-  }
-
-  fn drop(self) {} 
 }
 
-fn of_int(n: i64) -> Val<'static> {
+impl <'a> Val<'a, intnat> {
+  fn as_int(self) -> intnat {
+    assert!(!Is_block(self.raw));
+    self.raw >> 1
+  }
+}
+
+
+
+fn of_int(n: i64) -> Val<'static, intnat> {
   Val { _marker: Default::default(), raw: (n << 1) | 1 }
 }
 
 
 
 /* A location registered with the GC */
-struct Var<'a> {
-  cell: &'a Cell<RawValue>
+struct Var<'a, T> {
+  cell: &'a Cell<RawValue>,
+  _marker: marker::PhantomData<Cell<T>>
 }
 
-impl <'a> Var<'a> {
-  fn new<'gc, 'tmp>(gc : &'a Gc<'gc>, x : Val<'tmp>) -> Var<'gc> {
+impl <'a, T> Var<'a, T> {
+  fn new<'gc, 'tmp>(gc : &'a Gc<'gc>, x : Val<'tmp, T>) -> Var<'gc, T> {
     let cell : &'gc Cell<RawValue> = unsafe { alloc_gc_cell(gc) };
     cell.set(x.eval());
-    Var { cell: cell }
+    Var { _marker: Default::default(), cell: cell }
   }
-  fn set<'gc, 'tmp>(&mut self, x: Val<'tmp>) {
+  fn set<'gc, 'tmp>(&mut self, x: Val<'tmp, T>) {
     self.cell.set(x.eval());
   }
-  fn get<'gc, 'tmp>(&'a self, _gc: &'tmp Gc<'gc>) -> Val<'tmp> {
+  fn get<'gc, 'tmp>(&'a self, _gc: &'tmp Gc<'gc>) -> Val<'tmp, T> {
     Val { _marker: Default::default(), raw: self.cell.get() }
   }
 }
 
-impl <'a> Drop for Var<'a> {
+impl <'a, T> Drop for Var<'a, T> {
   fn drop(&mut self) {
     unsafe{ free_gc_cell(self.cell) }
   }
 }
 
-struct GCResult1 {
-  raw: RawValue
+struct GCResult1<T> {
+  raw: RawValue,
+  _marker: marker::PhantomData<T>
 }
 
-struct GCResult2 {
-  raw: RawValue
+struct GCResult2<T> {
+  raw: RawValue,
+  _marker: marker::PhantomData<T>
 }
 
-impl GCResult1 {
-  fn mark<'gc>(self, _gc: &mut Gc<'gc>) -> GCResult2 { GCResult2 { raw: self.raw } }
+impl <T> GCResult1<T> {
+  fn of(raw: RawValue) -> GCResult1<T> { GCResult1 { _marker: Default::default(), raw: raw }}
+  fn mark<'gc>(self, _gc: &mut Gc<'gc>) -> GCResult2<T> {
+    GCResult2 { _marker: Default::default(), raw: self.raw }
+  }
 }
-impl GCResult2 {
-  fn eval<'a, 'gc: 'a>(self, _gc: &'a Gc<'gc>) -> Val<'a> {
+impl <T> GCResult2<T> {
+  fn eval<'a, 'gc: 'a>(self, _gc: &'a Gc<'gc>) -> Val<'a, T> {
     Val {_marker: Default::default(), raw: self.raw}
   }
 }
 
 struct GCtoken {}
 
-fn alloc_pair<'a>(_token: GCtoken, tag: Uintnat, a: Val<'a>, b: Val<'a>) -> GCResult1 {
-  GCResult1 { raw: unsafe { caml_alloc_pair(tag, a.eval(), b.eval()) } }
+fn alloc_pair<'a,A: MLType,B: MLType>(_token: GCtoken, tag: Uintnat, a: Val<'a, A>, b: Val<'a, B>) -> GCResult1<Pair<A,B>> {
+  GCResult1::of(unsafe{caml_alloc_pair(tag, a.eval(), b.eval())})
 }
 
-fn alloc_blank_string(_token: GCtoken, len: usize) -> GCResult1 {
-  GCResult1 { raw: unsafe { caml_alloc_string(len) } }
+fn alloc_blank_string(_token: GCtoken, len: usize) -> GCResult1<String> {
+  GCResult1::of(unsafe{ caml_alloc_string(len) })
 }
 
-fn alloc_string(token: GCtoken, s: &str) -> GCResult1 {
+fn alloc_string(token: GCtoken, s: &str) -> GCResult1<String> {
   let r = alloc_blank_string(token, s.len());
   unsafe { ptr::copy_nonoverlapping(s.as_ptr(), r.raw as *mut u8, s.len()); }
   r
 }
-
-/*
-fn alloc_string<'a>(_token: GCtoken, s: &'a str) -> GCResult1 {
-  GCResult1 { raw: unsafe { caml_alloc_initialized_string(s.len(), s.as_ptr()) } }
-}
-*/
-
-/*
-unsafe fn alloc<'uniq, 'a : 'uniq, 'gc>(gc: &'a mut Gc<'gc>, tag: Uintnat, contents: &[RawValue]) -> RawValue {
-    let len = contents.len();
-    let b =
-      if 1 <= len && len <= Max_young_wosize {
-        let block = caml_alloc_small(len as Uintnat, tag);
-        for (i, elem) in contents.iter().enumerate() {
-          *block.offset(i as isize) = elem.eval(gc);
-        }
-        block
-      } else {
-        let block = caml_alloc(len as Uintnat, tag);
-        for (i, elem) in contents.iter().enumerate() {
-          caml_initialize(block.offset(i as isize), elem.eval(gc));
-        }
-        block
-      };
-//    Value::Val(gc, b as RawValue)
-    b
-}
-*/
 
 macro_rules! call {
   {
   $fn:ident
   ( $gc:ident, $( $arg:expr ),* )
   } => {{
-    let res : GCResult1 = $fn( GCtoken {}, $( $arg ),* );
+    let res = $fn( GCtoken {}, $( $arg ),* );
     res.mark($gc).eval($gc)
   }}
 }
 
-#[no_mangle]
-pub extern fn rusty(x: RawValue, y: RawValue) -> RawValue {
-  with_gc(|gc| {
-    let h1 = Val { _marker: Default::default(), raw: x}.var(gc);
-    let h2 = Val { _marker: Default::default(), raw: y}.var(gc);
-    let mut h3 = of_int(0).var(gc);
-    for _ in 1..1000 {
-      //let _x = Val { _gc: gc, raw: 1 };
-      let _ = call!{ alloc_pair(gc, 0, of_int(100), h1.get(gc)) };
-    }
-    let _foo = of_int(100); //call!{ alloc_pair(gc, 0, h1.get(gc), h2.get(gc))};
-    h3.set(call!{ alloc_pair(gc, 0, h1.get(gc), h2.get(gc))});
+macro_rules! camlmod {
+  {
+    $(
+      fn $name:ident( $gc:ident, $($arg:ident : $ty:ty),* ) -> $res:ty $body:block
+    )*
+  } => {
+    $(
+      #[no_mangle]
+      pub extern fn $name( $($arg: RawValue), *) -> RawValue {
+        with_gc(|$gc| {
+          $(
+            let $arg : Val<$ty> = unsafe { Val::new($gc, $arg) };
+          );*
+            $body
+        })
+      }
+    )*
 
-    let pair = call!{ alloc_pair(gc, 0, h1.get(gc), h2.get(gc))}.var(gc);
-//    let thing = foo.eval(gc);
-    { 
-//      let asdf = withalloc(withgc(gc), gc); 
-    }
-    for _ in 1..1000 {
-      let _ = call!{ alloc_pair(gc, 0, of_int(100), of_int(20)) };
-    } 
-    return pair.get(gc).raw;
-  })
-}
-
-macro_rules! camlfn {
-  (
-    $name:ident( $gc:ident, $($arg:ident),* ) $body:block
-  ) => {
     #[no_mangle]
-    pub extern fn $name( $($arg: RawValue), *) -> RawValue {
-      with_gc(|$gc| {
-        $(
-          let $arg = Val::new($gc, $arg);
-        );*
-        $body
-      })
+    pub extern fn print_module(_unused: RawValue) -> RawValue {
+      $(
+        {
+          let mut s = "".to_owned();
+          $(
+            s.push_str(&type_name::<$ty>());
+            s.push_str(" -> ");
+          )*
+          s.push_str(&type_name::<$res>());
+          print!("external {} : {} = \"{}\"\n",
+                 stringify!($name),
+                 s,
+                 stringify!($name));
+        }
+      )*
+      io::stdout().flush().unwrap();
+      1
     }
-  } 
+  };
 }
 
-camlfn!{tostring(gc, p) {
-  let s = p.field(0);
-  let n = p.field(1).as_int();
-  
-  let mut r: String = s.as_str().to_owned(); //s.as_str().to_owned();
-  r.push_str(&n.to_string());
-  
-  let r = call!{ alloc_string(gc, &r) };
-  r.raw
-}}
+camlmod!{
+  fn tostring(gc, p: Pair<String, intnat>) -> String {
+    let pv = p.var(gc);
+    let msg = format!("str: {}, int: {}",
+                      p.fst().as_str(),
+                      p.snd().as_int());
+    let ret = call!{ alloc_string(gc, &msg) };
+    
+    let _msg2 = format!("str: {}", pv.get(gc).fst().as_str());
+    ret.raw
+  }
 
+  fn mkpair(gc, x: AA, y: BB) -> Pair<AA, BB> {
+    let pair = call!{ alloc_pair(gc, 0, x, y)};
+    return pair.raw;
+  }
+}
