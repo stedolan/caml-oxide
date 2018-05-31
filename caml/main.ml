@@ -7,5 +7,6 @@ let () =
       assert false;
     end
   done;
-  Printf.printf "%s\n" (Rusty.tostring ("hello", 42))
+  Printf.printf "%s\n" (Rusty.tostring ("hello", 42));
+  match Rusty.somestr 42 with Some s -> Printf.printf "%s\n" s | None -> ()
 

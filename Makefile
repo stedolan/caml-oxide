@@ -1,4 +1,4 @@
-OCAMLOPT = ocamlopt -thread unix.cmxa threads.cmxa
+OCAMLOPT = ocamlopt -thread -ccopt -pthread unix.cmxa threads.cmxa
 
 main: target/debug/librusty.a caml/allocpair.c caml/rusty.ml caml/main.ml 
 	$(OCAMLOPT) -I caml $^ -o $@

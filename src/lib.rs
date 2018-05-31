@@ -75,6 +75,7 @@ extern {
 //  fn caml_alloc(wosize: Uintnat, tag: Uintnat) -> *mut RawValue;
 //  fn caml_alloc_small(wosize: Uintnat, tag: Uintnat) -> *mut RawValue;
 //  fn caml_initialize(field: *mut RawValue, value: RawValue) -> ();
+  fn caml_alloc_cell(tag: Uintnat, a: RawValue) -> RawValue;
   fn caml_alloc_pair(tag: Uintnat, a: RawValue, b: RawValue) -> RawValue;
   fn caml_alloc_string(len: usize) -> RawValue;
   fn caml_alloc_initialized_string(len: usize, contents: *const u8) -> RawValue;
@@ -230,6 +231,15 @@ impl <A: MLType> MLType for List<A> {
   }
 }
 
+struct Option<A: MLType> {
+  _a: marker::PhantomData<A>
+}
+impl <A: MLType> MLType for Option<A> {
+  fn name() -> String {
+    format!("{} option", A::name())
+  }
+}
+
 enum CList<'a, A:'a + MLType> {
   Nil,
   Cons { x: Val<'a, A>, xs: Val<'a, List<A>> }
@@ -329,6 +339,10 @@ fn alloc_pair<'a,A: MLType,B: MLType>(_token: GCtoken, tag: Uintnat, a: Val<'a, 
   GCResult1::of(unsafe{caml_alloc_pair(tag, a.eval(), b.eval())})
 }
 
+fn alloc_some<'a,A:MLType>(_token: GCtoken, a: Val<'a,A>) -> GCResult1<Option<A>> {
+  GCResult1::of(unsafe{caml_alloc_cell(0, a.eval())})
+}
+
 fn alloc_blank_string(_token: GCtoken, len: usize) -> GCResult1<String> {
   GCResult1::of(unsafe{ caml_alloc_string(len) })
 }
@@ -338,6 +352,7 @@ fn alloc_string(token: GCtoken, s: &str) -> GCResult1<String> {
   unsafe { ptr::copy_nonoverlapping(s.as_ptr(), r.raw as *mut u8, s.len()); }
   r
 }
+
 
 macro_rules! call {
   {
@@ -362,7 +377,8 @@ macro_rules! camlmod {
           $(
             let $arg : Val<$ty> = unsafe { Val::new($gc, $arg) };
           );*
-            $body
+          let retval : Val<$res> = $body;
+          retval.raw
         })
       }
     )*
@@ -398,11 +414,18 @@ camlmod!{
     let ret = call!{ alloc_string(gc, &msg) };
     
     let _msg2 = format!("str: {}", pv.get(gc).fst().as_str());
-    ret.raw
+    ret
   }
 
   fn mkpair(gc, x: AA, y: BB) -> Pair<AA, BB> {
     let pair = call!{ alloc_pair(gc, 0, x, y)};
-    return pair.raw;
+    pair
+  }
+
+  fn somestr(gc, x: intnat) -> Option<String> {
+    let s = x.as_int().to_string();
+    let cell = call!{ alloc_some(gc, call!{alloc_string(gc, &s)} ) };
+    let cell2 = call!{ alloc_some(gc, call!{alloc_string(gc, &s)} ) };
+    cell
   }
 }
