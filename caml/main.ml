@@ -8,5 +8,6 @@ let () =
     end
   done;
   Printf.printf "%s\n" (Rusty.tostring ("hello", 42));
+  Printf.printf "%s\n" (match Rusty.strtail "hello" with Some s -> s | None -> "?");
   match Rusty.somestr 42 with Some s -> Printf.printf "%s\n" s | None -> ()
 

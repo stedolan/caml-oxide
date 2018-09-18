@@ -1,3 +1,5 @@
 external tostring : (string * int) -> string = "tostring"
 external mkpair : 'a -> 'b -> ('a * 'b) = "mkpair"
+external strtail : string -> string option = "strtail"
 external somestr : int -> string option = "somestr"
+external trip : 'a -> ('a * ('a * 'a)) = "trip"

@@ -260,13 +260,15 @@ impl <'a, A: MLType, B: MLType> Val<'a, Pair<A, B>> {
 }
 
 impl <'a> Val<'a, String> {
-  fn as_str(self) -> &'a str {
+  fn as_bytes(self) -> &'a [u8] {
     let s = self.raw;
     assert!(Tag_val(s) == String_tag);
     unsafe {
-      let slice = slice::from_raw_parts(s as *const u8, caml_string_length(s));
-      str::from_utf8(slice).unwrap()
+      slice::from_raw_parts(s as *const u8, caml_string_length(s))
     }
+  }
+  fn as_str(self) -> &'a str {
+    str::from_utf8(self.as_bytes()).unwrap()
   }
 }
 
@@ -339,12 +341,22 @@ fn alloc_pair<'a,A: MLType,B: MLType>(_token: GCtoken, tag: Uintnat, a: Val<'a, 
   GCResult1::of(unsafe{caml_alloc_pair(tag, a.eval(), b.eval())})
 }
 
+fn none<A:MLType>(_token: GCtoken) -> GCResult1<Option<A>> {
+  GCResult1::of(1)
+}
+
 fn alloc_some<'a,A:MLType>(_token: GCtoken, a: Val<'a,A>) -> GCResult1<Option<A>> {
   GCResult1::of(unsafe{caml_alloc_cell(0, a.eval())})
 }
 
 fn alloc_blank_string(_token: GCtoken, len: usize) -> GCResult1<String> {
   GCResult1::of(unsafe{ caml_alloc_string(len) })
+}
+
+fn alloc_bytes(token: GCtoken, s: &[u8]) -> GCResult1<String> {
+  let r = alloc_blank_string(token, s.len());
+  unsafe { ptr::copy_nonoverlapping(s.as_ptr(), r.raw as *mut u8, s.len()); }
+  r
 }
 
 fn alloc_string(token: GCtoken, s: &str) -> GCResult1<String> {
@@ -422,10 +434,25 @@ camlmod!{
     pair
   }
 
+  fn strtail(gc, x: String) -> Option<String> {
+    let b = x.as_bytes();
+    if b.is_empty() {
+      call!{ none(gc, ) }
+    } else {
+      call!{ alloc_some(gc, call!{alloc_bytes(gc, &b[1..])}) }
+    }
+  }
+
   fn somestr(gc, x: intnat) -> Option<String> {
     let s = x.as_int().to_string();
     let cell = call!{ alloc_some(gc, call!{alloc_string(gc, &s)} ) };
-    let cell2 = call!{ alloc_some(gc, call!{alloc_string(gc, &s)} ) };
+//    let cell2 = call!{ alloc_some(gc, call!{alloc_string(gc, &s)} ) };
     cell
+  }
+
+  fn triple(gc, x: AA) -> Pair<AA, Pair<AA, AA>> {
+    let vx = x.var(gc);
+    let snd = call!{alloc_pair(gc, 0, x, x)};
+    call!{ alloc_pair(gc, 0, vx.get(gc), snd) }
   }
 }
